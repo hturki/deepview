@@ -16,7 +16,7 @@ def get_base64_encoded_image(image_path):
 def to_device(x, device):
     """Cast a hierarchical object to pytorch device"""
     if isinstance(x, torch.Tensor):
-        return x.to(device)
+        return x.contiguous().to(device)
     elif isinstance(x, dict):
         for k in list(x.keys()):
             x[k] = to_device(x[k], device)

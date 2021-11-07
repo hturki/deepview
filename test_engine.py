@@ -4,9 +4,9 @@ import sys
 
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 
-import skimage.metrics
+#import skimage.metrics
 
 import misc
 

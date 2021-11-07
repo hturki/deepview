@@ -1,14 +1,12 @@
 # Train DeepView!
 
-import sys
-import numpy as np
-import matplotlib.pyplot as plt
+import os
+from pathlib import Path
+
 import torch
 import torch.utils.data
 
-import misc
 import trainer_deepview
-import os
 
 
 ########################################################################################################################
@@ -17,32 +15,30 @@ def main():
 
     do_training = os.environ.get('TRAIN', 'True') == 'True'
 
-    dset_name = os.environ.get('DSET_NAME', 'spaces:1deterministic') 
+    #dset_name = os.environ.get('DSET_NAME', 'spaces:1deterministic')
     #dset_options = dict(tiny=True, layout='large_4_9')
     # dset_name = 're:1random'
     dset_options = {}
 
-    dset_path_spaces = os.environ.get('SPACES_PATH', '/big/workspace/spaces_dataset/')
-    dset_path_re = os.environ.get('RE_PATH', '/big/workspace/real-estate-10k-run0')
-    dset_path_blender = os.environ.get('BLENDER_PATH', '/big/workspace/negatives-wupi/felix-london-july-74/blender0/')
-    
-    if dset_name.startswith('spaces'):
-        dset_path = dset_path_spaces
-    elif dset_name == 're:1random':
-        dset_path = dset_path_re
-    elif dset_name =="blender":
-        dset_path = dset_path_blender
+    # dset_path_spaces = os.environ.get('SPACES_PATH', '/big/workspace/spaces_dataset/')
+    # dset_path_re = os.environ.get('RE_PATH', '/big/workspace/real-estate-10k-run0')
+    # dset_path_blender = os.environ.get('BLENDER_PATH', '/big/workspace/negatives-wupi/felix-london-july-74/blender0/')
+    #
+    # if dset_name.startswith('spaces'):
+    #     dset_path = dset_path_spaces
+    # elif dset_name == 're:1random':
+    #     dset_path = dset_path_re
+    # elif dset_name =="blender":
+    #     dset_path = dset_path_blender
     
     device_type = os.environ.get('DEVICE', 'cuda')
-    export_path = os.environ.get('EXPORT_MODEL', False)
     device = torch.device(device_type)
     batch_size = 1
     lr = 1e-4
-    epochs = 1
-    im_w, im_h = 200, 120
+    epochs = 100
+    im_w, im_h = int(os.environ['IM_W']), int(os.environ['IM_H'])
 
-    trainer = trainer_deepview.TrainerDeepview(dset_dir=dset_path,
-                                               dset_name=dset_name,
+    trainer = trainer_deepview.TrainerDeepview(dset_dir=os.environ['DSET_PATH'],
                                                dset_options=dset_options,
                                                device=device,
                                                lr=lr,
@@ -50,14 +46,20 @@ def main():
                                                im_w=im_w,
                                                im_h=im_h,
                                                borders=(im_w // 5, im_h // 5))
-    
-    # try loading the model
-    trainer.load_model()
+
+    save_path = Path(os.environ['SAVE_PATH'])
+    print('Save path', save_path)
+    if save_path.exists() and len(list(save_path.iterdir())) > 0:
+        latest_checkpoint = sorted(list(save_path.iterdir()), key=lambda x: int(x.stem))[-1]
+        print('Loading from {}'.format(latest_checkpoint))
+
+        # try loading the model
+        trainer.load_model(latest_checkpoint)
+    else:
+        save_path.mkdir(parents=True, exist_ok=True)
 
     if do_training:   # Train or load ?
         trainer.train_loop(n_epoch=epochs)
-    if export_path:
-        trainer.save_model(export_path)
 
     #trainer.demo_draw()
     trainer.create_html_viewer()

@@ -1,32 +1,29 @@
-
-import sys
+import os
 import pathlib
 import time
 
-import tqdm
-import numpy as np
 import torch
 import torch.nn.functional
 import torch.utils.data
-import matplotlib.pyplot as plt
+import tqdm
 
-import dset_spaces.dset1
-import dset_realestate.dset1
-import dset_blender.dset1
-import model_deepview
-import vgg
 import misc
-import utils_render
+import model_deepview
 import test_engine
-
-
+import utils_render
+import vgg
 ########################################################################################################################
+from dset_realestate.dronenerf import DroneNeRF
+from metrics import get_metrics
+from tiled_render_spaces import crop_model_input
+
+
 class TrainerDeepview:
     """
     Trainer class for "mini_deep_view_no_lgd"
     """
 
-    def __init__(self, dset_dir, dset_name, dset_options={}, device=torch.device('cuda'), lr=1.e-3, batch_size=1,
+    def __init__(self, dset_dir, dset_options={}, device=torch.device('cuda'), lr=1.e-3, batch_size=1,
                  im_w=200, im_h=200, borders=(0, 0)):
         self.device = device
         self.batch_size = batch_size
@@ -38,37 +35,37 @@ class TrainerDeepview:
         self.model = model_deepview.DeepViewLargeModel().to(device=device)
         # VGG loss
         self.vgg_loss = vgg.VGGPerceptualLoss1(resize=False, device=device)
+
+        self.iteration_count = 0
+
         # Dataset+loaders
         print(
-            f'TrainerDeepview: dset_dir={dset_dir}, dset_name={dset_name}, dset_options={dset_options}, device={device}')
-        if dset_name == 'spaces:1deterministic':
-            self.dset_train = dset_spaces.dset1.DsetSpaces1(dset_dir, False, im_w=im_w, im_h=im_h, **dset_options)
-            self.dset_val = dset_spaces.dset1.DsetSpaces1(dset_dir, True, im_w=im_w, im_h=im_h, **dset_options)
-        elif dset_name == 're:1random':
-            self.dset_train = dset_realestate.dset1.DsetRealEstate1(dset_dir, False, im_w=im_w, im_h=im_h,
-                                                                    **dset_options)
-            self.dset_val = dset_realestate.dset1.DsetRealEstate1(dset_dir, True, im_w=im_w, im_h=im_h, **dset_options)
-        elif dset_name =="blender":
-            self.dset_train = dset_blender.dset1.DsetBlender(dset_dir, False, im_w=im_w, im_h=im_h,
-                                                                    **dset_options)
-            self.dset_val = dset_blender.dset1.DsetBlender(dset_dir, True, im_w=im_w, im_h=im_h, **dset_options)
-        else:
-            raise ValueError(f'Wrong dset_name={dset_name} !')
+            f'TrainerDeepview: dset_dir={dset_dir}, dset_options={dset_options}, device={device}')
 
-        print(f'Datasets : train: {len(self.dset_train)},  val: {len(self.dset_val)}')
+        self.dset_train = DroneNeRF(dset_dir, False, im_w, im_h, **dset_options)
+        self.dset_val = DroneNeRF(dset_dir, True, im_w, im_h, **dset_options)
+
+        # if dset_name == 'spaces:1deterministic':
+        #     self.dset_train = dset_spaces.dset1.DsetSpaces1(dset_dir, False, im_w=im_w, im_h=im_h, **dset_options)
+        #     self.dset_val = dset_spaces.dset1.DsetSpaces1(dset_dir, True, im_w=im_w, im_h=im_h, **dset_options)
+        # elif dset_name == 're:1random':
+        #     self.dset_train = dset_realestate.dset1.DsetRealEstate1(dset_dir, False, im_w=im_w, im_h=im_h,
+        #                                                             **dset_options)
+        #     self.dset_val = dset_realestate.dset1.DsetRealEstate1(dset_dir, True, im_w=im_w, im_h=im_h, **dset_options)
+        # elif dset_name =="blender":
+        #     self.dset_train = dset_blender.dset1.DsetBlender(dset_dir, False, im_w=im_w, im_h=im_h,
+        #                                                             **dset_options)
+        #     self.dset_val = dset_blender.dset1.DsetBlender(dset_dir, True, im_w=im_w, im_h=im_h, **dset_options)
+        # else:
+        #     raise ValueError(f'Wrong dset_name={dset_name} !')
+
+        print(f'Datasets : train: {len(self.dset_train)} {len},  val: {len(self.dset_val)}')
         self.loader_train = torch.utils.data.DataLoader(self.dset_train, batch_size=self.batch_size,
                                                         num_workers=self.num_workers, shuffle=True)
         self.loader_val = torch.utils.data.DataLoader(self.dset_val, batch_size=self.batch_size,
                                                       num_workers=self.num_workers)
         # Optimizer
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-
-        if False:
-            b = next(iter(self.loader_train))
-            print(('KEYS=', list(b.keys())))
-            for k, v in list(b.items()):
-                print(f'{k} : {v.shape} {v.dtype}')
-            sys.exit(0)
 
     def process_one(self, out, x):
         """Process and render one network output+target"""
@@ -78,7 +75,6 @@ class TrainerDeepview:
         # print('SHAPE=', rgba_layers.shape)
         # print(f'MIN={rgba_layers.min().item()}, MAX={rgba_layers.max().item()}')
         n_targets = x['tgt_img'].shape[1]
-
 
         # t1 = time.time()
         batch_size = rgba_layers.shape[0]
@@ -104,8 +100,9 @@ class TrainerDeepview:
                 intrin_tgt = x['tgt_intrin'][i_batch]
                 intrin_ref = x['ref_intrin'][i_batch].unsqueeze(0).repeat(n_targets, 1, 1)
                 rgba = rgba_layers[i_batch].unsqueeze(0).repeat(n_targets, 1, 1, 1, 1)
-                
-                out_images = utils_render.mpi_render_view_torch(rgba, rel_pose, x['mpi_planes'][i_batch], intrin_tgt, intrin_ref)
+
+                out_images = utils_render.mpi_render_view_torch(rgba, rel_pose, x['mpi_planes'][i_batch], intrin_tgt,
+                                                                intrin_ref)
 
             # t2 = time.time()
             # print('TIME RENDER', t2-t1)
@@ -123,12 +120,66 @@ class TrainerDeepview:
         loss = self.vgg_loss(output_image, target)
         return loss
 
+    @staticmethod
+    def composite_image(model, device, x, tile_w, tile_h):
+        """Infer a batch, and create an HTML viewer from the template"""
+
+        # breakpoint()
+        _, _, base_h, base_w, _ = x['in_img'].shape
+        margin_w = tile_w // 4
+        margin_h = tile_h // 4
+
+        subtile_w = tile_w - 2 * margin_w
+        subtile_h = tile_h - 2 * margin_h
+        iters_w = (base_w - 2 * margin_w) // subtile_w
+        iters_h = (base_h - 2 * margin_h) // subtile_h
+
+        yi_rgba_layers = []
+        for yi in range(0, iters_h):
+            y0 = yi * subtile_h
+
+            min_y = 0 if yi == 0 else margin_h
+            max_y = tile_h if yi == (iters_h - 1) else (tile_h - margin_h)
+            xi_rgba_layers = []
+            for xi in range(0, iters_w):
+                x0 = xi * subtile_w
+                x_ij = crop_model_input(x, x0, y0, tile_w, tile_h)
+                x_ij = misc.to_device(x_ij, device)  # One batch
+
+                with torch.no_grad():
+                    out = model(x_ij)
+                out = torch.sigmoid(out)
+                rgba_layers_x0 = out.permute(0, 3, 4, 1, 2)  # result: [batch, height, width, layers, colours]
+
+                min_x = 0 if xi == 0 else margin_w
+                max_x = tile_w if xi == (iters_w - 1) else (tile_w - margin_w)
+
+                xi_rgba_layers.append(rgba_layers_x0[:, min_y:max_y, min_x:max_x])
+
+            rgba_layers_y0 = torch.cat(xi_rgba_layers, dim=2)
+            yi_rgba_layers.append(rgba_layers_y0)
+
+        rgba_layers = torch.cat(yi_rgba_layers, dim=1)
+
+        rgb = torch.zeros(rgba_layers.shape[1], rgba_layers.shape[2], 3, device=rgba_layers.device)
+        remaining = torch.ones(rgba_layers.shape[1], rgba_layers.shape[2], 1, device=rgba_layers.device)
+        for rgba_layer in rgba_layers.squeeze().permute(2, 0, 1, 3):
+            weight = (rgba_layer[:, :, 3:] * remaining)
+            weighted = rgba_layer[:, :, :3] * weight
+            rgb += weighted
+            remaining -= weight
+
+        val_psnr, val_ssim, val_lpips_metrics = get_metrics(rgb.cpu(), x['tgt_img'].squeeze().cpu())
+        return val_psnr, val_ssim, val_lpips_metrics
+
     def val(self):
         """Validate, 1 run"""
         self.model.eval()
         loss_sum = 0
         with torch.no_grad():
             for batch in self.loader_val:
+                print(self.composite_image(self.model, 'cuda', batch, self.dset_val.im_w, self.dset_val.im_h))
+
                 x = misc.to_device(batch, self.device)
                 out = self.model(x)
                 loss = self.loss(out, x)
@@ -150,6 +201,11 @@ class TrainerDeepview:
             loss_sum += loss.item()
             # t2 = time.time()
             # print('TIME TRAIN RUN', t2-t1)
+
+            self.iteration_count += 1
+            if self.iteration_count % 10000 == 0:
+                self.save_model()
+
         return loss_sum / len(self.loader_train)
 
     def train_loop(self, n_epoch=10):
@@ -160,40 +216,23 @@ class TrainerDeepview:
             loss_val = self.val()
             t2 = time.time()
             print(
-                f'\nEpoch {i_epoch}/{n_epoch} : loss_train = {loss_train}, loss_val = {loss_val}, time = {t2 - t1:6.2f}s')
+                f'\nEpoch {i_epoch}/{n_epoch} : iterations = {self.iteration_count} : loss_train = {loss_train}, loss_val = {loss_val}, time = {t2 - t1:6.2f}s')
         # Save the trained model
         self.save_model()
 
-    def save_model(self, filepath_s='./trained-models/dview.pt'):
-        filepath = pathlib.Path(filepath_s)
-        if not filepath.parent.exists():
-            filepath.parent.mkdir()
-        torch.save(self.model.state_dict(), str(filepath))
+    def save_model(self):
+        dict = {
+            'model_state_dict': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'iteration': self.iteration_count,
+        }
+        torch.save(dict, pathlib.Path(os.environ['SAVE_PATH']) / '{}.pt'.format(self.iteration_count))
 
-    def load_model(self, filepath_s='./trained-models/dview.pt'):
-        filepath = pathlib.Path(filepath_s)
-        if filepath.exists():
-            self.model.load_state_dict(torch.load(str(filepath)))
-
-    def demo_draw(self):
-        """Draw predictions vs targets as a test"""
-        self.model.eval()
-        batch = next(iter(self.loader_val))
-        x = misc.to_device(batch, self.device)
-        with torch.no_grad():
-            out = self.model(x)
-        t1, t2 = self.process_one(out, x)
-        nt = t1.shape[0]
-        nt = min(nt, 1)
-        for i in range(nt):
-            plt.subplot(nt, 2, 2 * i + 1)
-            plt.imshow(misc.tens2rgb(t1[i]))
-            plt.axis('off')
-            plt.subplot(nt, 2, 2 * i + 2)
-            plt.imshow(misc.tens2rgb(t2[i]))
-            plt.axis('off')
-        plt.tight_layout()
-        plt.show()
+    def load_model(self, path: pathlib.Path):
+        checkpoint = torch.load(path)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        self.iteration_count = checkpoint['iteration']
 
     def create_html_viewer(self, scene_idx=0):
         """Infer a batch, and create an HTML viewer from the template"""
@@ -245,6 +284,5 @@ class TrainerDeepview:
                 outs, targets = self.process_one(out, x)
                 engine.run_batch(x, outs, targets, self.borders)
         engine.print_stats()
-
 
 ########################################################################################################################
