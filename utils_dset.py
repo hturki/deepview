@@ -62,7 +62,7 @@ def resize_totensor_intrinsics(img, intrin, im_w, im_h):
     """Resize PIL image with intrinsics and convert to tensor"""
     s_intrin = scale_intrinsics(intrin, im_h / img.height, im_w / img.width)
     s_img = img.resize((im_w, im_h))
-    t = torch.tensor(np.array(s_img) / 255, dtype=torch.float32)
+    t = torch.FloatTensor(np.array(s_img) / 255.).contiguous()
     return t, s_intrin
 
 

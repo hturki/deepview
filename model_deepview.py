@@ -1,4 +1,5 @@
 # DeepView models
+import os
 
 import torch
 from torch.utils.checkpoint import checkpoint_sequential
@@ -37,7 +38,7 @@ class ModelDeepViewBlock(torch.nn.Module):
     rename it to "ModelDeepViewBlock", and also create a ModelDeepViewFull wrapper class
     """
 
-    def __init__(self, nchan=32, iteration_num=0, is_final_iteration=False, plot_mem=False):
+    def __init__(self, nchan=int(os.environ['NCHAN']), iteration_num=0, is_final_iteration=False, plot_mem=False):
         """Decrease nchan to speed things up and save GPU RAM, if needed"""
         super().__init__()
 
@@ -178,9 +179,7 @@ class ModelDeepViewBlock(torch.nn.Module):
         else:
             cnn1_in = psv.permute(0, 1, 4, 2, 3).contiguous().view(depths_batches * views, channels, height, width)
 
-        print(cnn1_in.shape, cnn1_in[0])
-        cnn1_out = checkpoint_sequential(self.cnn1, segments=4,
-                                         input=cnn1_in.contiguous())  # [depths*views, channels=96, height, width]
+        cnn1_out = checkpoint_sequential(self.cnn1, segments=4, input=cnn1_in)  # [depths*views, channels=96, height, width]
 
         # compute max k over all views
         _, channels, height, width = cnn1_out.shape

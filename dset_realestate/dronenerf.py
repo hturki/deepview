@@ -21,7 +21,7 @@ class MetadataItem:
 ########################################################################################################################
 class DroneNeRF(torch.utils.data.Dataset):
 
-    def __init__(self, dataset_path, is_valid=False, im_w=200, im_h=200, num_planes=10, num_views=3, no_crop=False, resize_factor=None, patch_factor=None):
+    def __init__(self, dataset_path, is_valid=False, im_w=200, im_h=200, num_planes=10, num_views=3, no_crop=False, resize_factor=None):
         print(f'DroneNeRF: dataset_path={dataset_path}, is_valid={is_valid}')
         self.is_valid = is_valid
         self.dataset_path = pathlib.Path(dataset_path)
@@ -31,7 +31,6 @@ class DroneNeRF(torch.utils.data.Dataset):
         self.num_views = num_views
         self.no_crop = no_crop
         self.resize_factor = resize_factor
-        self.patch_factor = patch_factor
 
         self.metadata_items = []
         metadatas = list((self.dataset_path / 'train' / 'metadata').iterdir()) + list(
@@ -65,9 +64,9 @@ class DroneNeRF(torch.utils.data.Dataset):
     def __getitem__(self, i):
         index = self.used_indices[i]
         if self.is_valid:
-            indices = [index - 1, index + 1, index]
+            indices = [max(0, index - 1), index + 1, index]
         else:
-            indices = np.random.choice(np.arange(-5, 5), self.num_views)
+            indices = np.random.choice(np.arange(-3, 3), self.num_views)
 
         selected_metadata = []
         for idx in indices:
@@ -130,8 +129,8 @@ class DroneNeRF(torch.utils.data.Dataset):
             width = res['in_img'][0].shape[1]
             height = res['in_img'][0].shape[0]
 
-            w = tgt_img['image'].shape[1] #if self.patch_factor is None else tgt_img['image'].shape[1] // self.patch_factor
-            h = tgt_img['image'].shape[0]  #if self.patch_factor is None else tgt_img['image'].shape[0] // self.patch_factor
+            w = self.im_w if self.im_w is not None else tgt_img['image'].shape[1]
+            h = self.im_h if self.im_h is not None else tgt_img['image'].shape[0]
             if self.is_valid:
                 ref_pixel_x = (width / 2)
                 ref_pixel_y = (height / 2)

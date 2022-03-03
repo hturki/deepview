@@ -4,7 +4,6 @@ import os
 import pathlib
 from collections import defaultdict
 
-import PIL.Image
 import torch
 
 import misc
@@ -38,6 +37,23 @@ def create_html_viewer(outpath, model, device, x, num_planes, tile_w, tile_h):
     print(outpath)
     # breakpoint()
     _, _, base_h, base_w, _ = x['in_img'].shape
+
+    # w_factor = 4
+    # attempts = 0
+    # while tile_w % w_factor != 0:
+    #     if attempts > 10:
+    #         raise Exception(tile_w, w_factor)
+    #     w_factor += 1
+    #     attempts += 1
+    #
+    # h_factor = 4
+    # attempts = 0
+    # while tile_h % h_factor != 0:
+    #     if attempts > 10:
+    #         raise Exception(tile_h, h_factor)
+    #     h_factor += 1
+    #     attempts += 1
+
     margin_w = tile_w // 4
     margin_h = tile_h // 4
 
@@ -83,7 +99,8 @@ def create_html_viewer(outpath, model, device, x, num_planes, tile_w, tile_h):
 
     outpath.mkdir(parents=True)
     misc.save_image(rgb, outpath / 'result.png')
-    misc.save_image(x['tgt_img'].squeeze(), outpath / 'target.png')
+    target = x['tgt_img'].squeeze()
+    misc.save_image(target, outpath / 'target.png')
 
     # By now we have RGBA MPI in the [0, 1] range
     # Export them to the HTML
@@ -110,7 +127,11 @@ def create_html_viewer(outpath, model, device, x, num_planes, tile_w, tile_h):
     with open("{}/deepview-mpi-viewer.html".format(outpath), "w") as output_file:
         output_file.write(template_str)
 
-    val_psnr, val_ssim, val_lpips_metrics = get_metrics(rgb.cpu(), x['tgt_img'].squeeze().cpu())
+    start_h = (target.shape[0] - rgb.shape[0]) // 2
+    start_w = (target.shape[1] - rgb.shape[1]) // 2
+
+    val_psnr, val_ssim, val_lpips_metrics = get_metrics(rgb.cpu(), target.cpu()[start_h:start_h + rgb.shape[0],
+                                                                   start_w:start_w + rgb.shape[1]])
 
     with (outpath / 'metrics.txt').open('w') as f:
         f.write('PSNR: {}\n'.format(val_psnr))
@@ -133,8 +154,7 @@ def main():
 
     num_planes = 10
     patch_factor = int(os.environ['PATCH_FACTOR'])
-    dset = DroneNeRF(os.environ['DSET_PATH'], True, None, None, resize_factor=int(os.environ['RESIZE_FACTOR']),
-                     patch_factor=patch_factor)
+    dset = DroneNeRF(os.environ['DSET_PATH'], True, None, None, resize_factor=int(os.environ['RESIZE_FACTOR']))
 
     # load model
     model = model_deepview.DeepViewLargeModel()
@@ -150,10 +170,27 @@ def main():
     val_metrics = defaultdict(float)
     dloader = torch.utils.data.DataLoader(dset, batch_size=1)
     for i, x in enumerate(dloader):
-        print(x['tgt_img'].shape)
+        w_patch_factor = patch_factor
+        # attempts = 0
+        # while x['tgt_img'].shape[3] % w_patch_factor != 0:
+        #     if attempts > 10:
+        #         raise Exception(x['tgt_img'].shape[3], w_patch_factor)
+        #     w_patch_factor += 1
+        #     attempts += 1
+
+        h_patch_factor = patch_factor
+        # attempts = 0
+        # while x['tgt_img'].shape[2] % h_patch_factor != 0:
+        #     if attempts > 10:
+        #         raise Exception(x['tgt_img'].shape[2], h_patch_factor)
+        #     h_patch_factor += 1
+        #     attempts += 1
+
+        print(x['tgt_img'].shape, x['tgt_img'].shape[3] // w_patch_factor, x['tgt_img'].shape[2] // h_patch_factor)
+
         val_psnr, val_ssim, val_lpips_metrics = create_html_viewer(output / str(i), model, device, x, num_planes,
-                                                                   x['tgt_img'].shape[3] // 4,
-                                                                   x['tgt_img'].shape[2] // 4)
+                                                                   x['tgt_img'].shape[3] // w_patch_factor,
+                                                                   x['tgt_img'].shape[2] // h_patch_factor)
         val_metrics['val/psnr'] += val_psnr
         val_metrics['val/ssim'] += val_ssim
         for network in val_lpips_metrics:

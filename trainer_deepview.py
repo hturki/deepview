@@ -1,6 +1,7 @@
 import os
 import pathlib
 import time
+from collections import defaultdict
 
 import torch
 import torch.nn.functional
@@ -29,7 +30,7 @@ class TrainerDeepview:
         self.batch_size = batch_size
         self.lr = lr
         self.num_planes = 10
-        self.num_workers = 4
+        self.num_workers = 0
         self.borders = borders
         # Model
         self.model = model_deepview.DeepViewLargeModel().to(device=device)
@@ -42,8 +43,9 @@ class TrainerDeepview:
         print(
             f'TrainerDeepview: dset_dir={dset_dir}, dset_options={dset_options}, device={device}')
 
-        self.dset_train = DroneNeRF(dset_dir, False, im_w, im_h, **dset_options)
-        self.dset_val = DroneNeRF(dset_dir, True, im_w, im_h, **dset_options)
+        resize_factor = int(os.environ['RESIZE_FACTOR']) if 'RESIZE_FACTOR' in os.environ else None
+        self.dset_train = DroneNeRF(dset_dir, False, im_w, im_h, resize_factor=resize_factor, **dset_options)
+        self.dset_val = DroneNeRF(dset_dir, True, im_w, im_h, resize_factor=resize_factor, **dset_options)
 
         # if dset_name == 'spaces:1deterministic':
         #     self.dset_train = dset_spaces.dset1.DsetSpaces1(dset_dir, False, im_w=im_w, im_h=im_h, **dset_options)
@@ -177,14 +179,23 @@ class TrainerDeepview:
         self.model.eval()
         loss_sum = 0
         with torch.no_grad():
-            for batch in self.loader_val:
-                print(self.composite_image(self.model, 'cuda', batch, self.dset_val.im_w, self.dset_val.im_h))
+            val_metrics = defaultdict(float)
 
+            for batch in self.loader_val:
+                val_psnr, val_ssim, val_lpips_metrics = self.composite_image(self.model, 'cuda', batch,
+                                                                             self.dset_val.im_w, self.dset_val.im_h)
+                val_metrics['val/psnr'] += val_psnr
+                val_metrics['val/ssim'] += val_ssim
+                for network in val_lpips_metrics:
+                    val_metrics['val/lpips/{}'.format(network)] += val_lpips_metrics[network]
                 x = misc.to_device(batch, self.device)
                 out = self.model(x)
                 loss = self.loss(out, x)
                 loss_sum += loss.item()
-        return loss_sum / len(self.loader_val)
+
+        for key in val_metrics:
+            val_metrics[key] /= len(self.loader_val)
+        return loss_sum / len(self.loader_val), val_metrics
 
     def train(self):
         """Train 1 epoch"""
@@ -203,8 +214,6 @@ class TrainerDeepview:
             # print('TIME TRAIN RUN', t2-t1)
 
             self.iteration_count += 1
-            if self.iteration_count % 10000 == 0:
-                self.save_model()
 
         return loss_sum / len(self.loader_train)
 
@@ -213,10 +222,12 @@ class TrainerDeepview:
         for i_epoch in range(n_epoch):
             t1 = time.time()
             loss_train = self.train()
-            loss_val = self.val()
+            loss_val, val_metrics = self.val()
             t2 = time.time()
             print(
-                f'\nEpoch {i_epoch}/{n_epoch} : iterations = {self.iteration_count} : loss_train = {loss_train}, loss_val = {loss_val}, time = {t2 - t1:6.2f}s')
+                f'\nEpoch {i_epoch}/{n_epoch} : iterations = {self.iteration_count} : loss_train = {loss_train}, loss_val = {loss_val}, val_metrics = {val_metrics}, time = {t2 - t1:6.2f}s')
+            self.save_model()
+
         # Save the trained model
         self.save_model()
 
